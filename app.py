@@ -104,8 +104,7 @@ def GeneratorUNet(input_shape=(IMG_SIZE, IMG_SIZE, 7), output_channels=3):
 
 # --- 2. Fungsi Pemuatan Model dan Aset ---
 
-# Matikan cache untuk sementara jika ada masalah di cache Streamlit
-# @st.cache_resource
+@st.cache_resource
 def load_generator_model(model_path):
     """Memuat model generator (netG) dari path lokal."""
     logger.info(f"Attempting to load model from: {model_path}")
@@ -165,13 +164,15 @@ def process_inference(shoe_path, feet_data, netG, result_container):
         return 
 
     # Normalisasi
-    shoe_norm = normalize(shoe_img)
-    feet_norm = normalize(feet_img)
+    shoe_norm = normalize(shoe_img) # Rentang [-1, 1]
+    feet_norm = normalize(feet_img) # Rentang [-1, 1]
     
-    # === PENTING: MENGATUR 7 CHANNEL INPUT ===
-    # Gabungkan input (Sepatu 3ch + Kaki 3ch). Tambahkan 1 Channel Mask biner (semua 1)
-    mask_channel = np.ones((IMG_SIZE, IMG_SIZE, 1), dtype=np.float32)
-    input_tensor = np.concatenate([shoe_norm, feet_norm, mask_channel], axis=-1) # Total 7 channels!
+    # === PERBAIKAN: MENGATUR 7 CHANNEL INPUT DAN MENGATASI OUTPUT PUTIH ===
+    # Karena output putih, kita asumsikan mask Biner/Depth Anda dinormalisasi ke rentang [-1, 1].
+    # Untuk mengatasi output putih, kita coba mask yang semua nilainya di tengah rentang, yaitu 0.
+    # Nilai 0 pada rentang [-1, 1] adalah nilai abu-abu 127.5 pada rentang [0, 255].
+    mask_channel_float = np.zeros((IMG_SIZE, IMG_SIZE, 1), dtype=np.float32) 
+    input_tensor = np.concatenate([shoe_norm, feet_norm, mask_channel_float], axis=-1) # Total 7 channels!
     
     input_tensor = np.expand_dims(input_tensor, axis=0) # Tambah dimensi batch
 
@@ -181,13 +182,12 @@ def process_inference(shoe_path, feet_data, netG, result_container):
                 # Inferensi
                 prediction = netG(input_tensor, training=False)[0].numpy()
                 
-                # Denormalisasi
+                # Denormalisasi (Sudah benar: [-1, 1] -> [0, 255])
                 prediction = (prediction * 0.5 + 0.5) * 255.0
                 prediction = prediction.clip(0, 255).astype(np.uint8)
                 
                 # Tampilkan hasil
                 st.subheader("🎉 Hasil Virtual Try-On")
-                # Menggunakan use_column_width=True (deprecated, tapi biarkan dulu)
                 st.image(prediction, caption="Hasil Penggabungan Sepatu dan Kaki", use_column_width=True) 
                 
             except Exception as e:
