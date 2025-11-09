@@ -14,16 +14,18 @@ from functools import lru_cache
 # KONFIGURASI DAN UTILITAS
 # ==============================================================================
 IMG_SIZE = 256
+# GANTI PATH INI DENGAN LOKASI FILE .h5 ANDA YANG BENAR
 MODEL_G_PATH = 'models/pix2pix_tryon_G.h5' 
 
 # Konfigurasi logging untuk debugging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# --- Konfigurasi Halaman Streamlit ---
 st.set_page_config(
     page_title="Virtual Shoe Try-On App",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded" # Ubah ke expanded agar debug mudah diakses
 )
 
 # --- 1. Re-Definisi Arsitektur Model (Generator UNet) ---
@@ -52,16 +54,14 @@ def upsample(filters, size, apply_dropout=False):
     return result
 
 def GeneratorUNet(input_shape=(IMG_SIZE, IMG_SIZE, 7), output_channels=3):
-    # PENTING: Input 7 channel sesuai training Anda
     inputs = Input(shape=input_shape) 
 
     # Downsampling (5 Lapisan)
     down_stack = [
-        # PENTING: Filter awal 32 sesuai training Anda
         downsample(32, 4, apply_batchnorm=False), # L1 (Output: 128x128x32)
-        downsample(64, 4),                       # L2 (Output: 64x64x64)
-        downsample(128, 4),                      # L3 (Output: 32x32x128)
-        downsample(256, 4),                      # L4 (Output: 16x16x256)
+        downsample(64, 4),                      # L2 (Output: 64x64x64)
+        downsample(128, 4),                     # L3 (Output: 32x32x128)
+        downsample(256, 4),                     # L4 (Output: 16x16x256)
         downsample(512, 4, apply_batchnorm=False), # L5: Bottleneck (Output: 8x8x512)
     ]
 
@@ -80,13 +80,12 @@ def GeneratorUNet(input_shape=(IMG_SIZE, IMG_SIZE, 7), output_channels=3):
     x = inputs
     skips = []
     
-    # Downward Pass (Menghasilkan 5 skips: skips[0] - skips[4])
+    # Downward Pass 
     for down in down_stack:
         x = down(x)
         skips.append(x)
     
     # Upward Pass 
-    
     # U1 menyambung ke skips[3] (L4)
     x = up_stack[0](skips[-1]) 
     x = Concatenate()([x, skips[3]]) 
@@ -104,6 +103,7 @@ def GeneratorUNet(input_shape=(IMG_SIZE, IMG_SIZE, 7), output_channels=3):
 
 # --- 2. Fungsi Pemuatan Model dan Aset ---
 
+# Gunakan cache resource agar model hanya dimuat sekali
 @st.cache_resource
 def load_generator_model(model_path):
     """Memuat model generator (netG) dari path lokal."""
@@ -111,8 +111,13 @@ def load_generator_model(model_path):
 
     if not os.path.exists(model_path):
         logger.error(f"File model not found at: {model_path}")
-        st.error(f"❌ File model tidak ditemukan di: {model_path}. Pastikan path dan nama filenya benar di GitHub.")
-        st.stop()
+        # Ganti dengan peringatan saja, karena di lingkungan Canvas mungkin tidak ada folder models
+        # GANTIKAN INI DENGAN FILE DUMMY JIKA BERJALAN DI LINGKUNGAN TANPA FILE ASLI
+        st.warning(f"⚠️ File model tidak ditemukan di: `{model_path}`. Aplikasi akan menggunakan model dummy untuk menghindari crash, namun hasilnya tidak akurat.")
+        
+        # Kembalikan model dummy agar aplikasi tetap berjalan
+        netG = GeneratorUNet()
+        return netG
     
     try:
         netG = GeneratorUNet()
@@ -127,56 +132,71 @@ def load_generator_model(model_path):
     except Exception as e:
         logger.error(f"FAILED TO LOAD MODEL: {e}")
         st.error(f"❌ Gagal memuat model. Error: {e}")
-        st.stop()
+        # Kembalikan model dummy agar aplikasi tetap berjalan
+        netG = GeneratorUNet()
+        return netG
 
 def get_asset_paths(folder_name):
     """Mendapatkan daftar path file gambar dari folder assets."""
-    files = glob.glob(os.path.join('assets', folder_name, '*.[jp][pn]g'), recursive=True)
-    files.extend(glob.glob(os.path.join('assets', folder_name, '*.jpeg'), recursive=True))
+    # Ini harus diubah sesuai struktur file di lingkungan Anda
+    base_dir = os.path.join('.', 'assets', folder_name)
+    if not os.path.isdir(base_dir):
+        # Ini hanya dummy path jika folder assets tidak ada
+        return [f"assets/{folder_name}/image_{i}.png" for i in range(4)]
+        
+    files = glob.glob(os.path.join(base_dir, '*.[jp][pn]g'), recursive=True)
+    files.extend(glob.glob(os.path.join(base_dir, '*.jpeg'), recursive=True))
     return files
 
 # --- 3. Pre-pemrosesan dan Inferensi ---
 
 def normalize(image):
+    # Normalisasi dari [0, 255] ke [-1, 1]
     return (image / 127.5) - 1
 
 def load_image(image_data):
     """Mengubah data gambar menjadi tensor yang diproses."""
-    if isinstance(image_data, str):
-        img = Image.open(image_data).convert('RGB')
-    elif isinstance(image_data, io.BytesIO) or hasattr(image_data, 'read'):
-        img = Image.open(image_data).convert('RGB')
-    else:
-        st.error("Input data gambar tidak valid.")
-        return None
+    try:
+        if isinstance(image_data, str):
+            # Ini hanya bekerja jika path file tersedia di lingkungan
+            if not os.path.exists(image_data):
+                 logger.warning(f"Path asset tidak ditemukan: {image_data}")
+                 # Menggunakan placeholder agar kode tidak crash
+                 img = Image.new('RGB', (IMG_SIZE, IMG_SIZE), color = 'red') 
+            else:
+                 img = Image.open(image_data).convert('RGB')
+        elif isinstance(image_data, io.BytesIO) or hasattr(image_data, 'read'):
+            img = Image.open(image_data).convert('RGB')
+        else:
+            raise ValueError("Input data gambar tidak valid.")
 
-    img = img.resize((IMG_SIZE, IMG_SIZE))
-    img = np.array(img, dtype=np.float32)
-    return img
+        img = img.resize((IMG_SIZE, IMG_SIZE))
+        img = np.array(img, dtype=np.float32)
+        return img
+    except Exception as e:
+        st.error(f"Gagal memuat atau memproses gambar: {e}")
+        return None
 
 def create_simple_mask(image_norm):
     """
-    Membuat mask biner sederhana berdasarkan ambang batas untuk mengasumsikan area sepatu.
+    Membuat mask biner sederhana berdasarkan ambang batas.
     Ini adalah auto-masking sederhana untuk channel ke-7.
-    Kita asumsikan sepatu adalah area yang berwarna (bukan hitam atau putih total).
-    Normalisasi ke rentang [-1, 1].
+    Input image_norm dalam rentang [-1, 1].
     """
-    # Menghitung ambang batas (contoh: rata-rata nilai piksel di atas ambang batas 0.5)
-    # Karena input sudah dinormalisasi ke [-1, 1], kita gunakan ambang batas dekat 0 (abu-abu tengah)
-    
     # Ambil nilai absolut rata-rata RGB
     mean_abs_rgb = np.mean(np.abs(image_norm), axis=-1, keepdims=True)
     
-    # Ambil ambang batas 0.15 (relatif dekat dengan 0 atau abu-abu tengah)
+    # Ambil ambang batas 0.15 (nilai di atas 0.15 dianggap 'berwarna' atau bukan abu-abu tengah/hitam total)
     mask = tf.cast(mean_abs_rgb > 0.15, tf.float32).numpy()
     
     # Normalisasi mask biner (0 atau 1) ke [-1, 1]
     # (0 -> -1, 1 -> 1)
     mask = mask * 2 - 1 
     
+    logger.info(f"Mask Min: {np.min(mask):.2f}, Mask Max: {np.max(mask):.2f}, Mask Mean: {np.mean(mask):.2f}")
     return mask
 
-def process_inference(shoe_path, feet_data, netG, result_container):
+def process_inference(shoe_path, feet_data, netG, result_container, debug_mode):
     """Memproses gambar sepatu dan kaki, melakukan inferensi, dan menampilkan hasil."""
     
     shoe_img = load_image(shoe_path)
@@ -194,18 +214,40 @@ def process_inference(shoe_path, feet_data, netG, result_container):
     shoe_mask = create_simple_mask(shoe_norm)
     
     # Gabungkan input (Sepatu 3ch + Kaki 3ch + Mask Sepatu 1ch)
-    input_tensor = np.concatenate([shoe_norm, feet_norm, shoe_mask], axis=-1) # Total 7 channels!
-    
-    input_tensor = np.expand_dims(input_tensor, axis=0) # Tambah dimensi batch
+    input_tensor_data = np.concatenate([shoe_norm, feet_norm, shoe_mask], axis=-1) # Total 7 channels!
+    input_tensor = np.expand_dims(input_tensor_data, axis=0) # Tambah dimensi batch
 
     with result_container:
-        with st.spinner('⏳ Sedang Menerapkan Try-On Virtual (Menggunakan Auto-Masking)...'):
+        if debug_mode:
+            st.subheader("🛠️ Informasi Debugging Input & Output Mentah")
+            
+            # DEBUG 1: Tampilkan Mask Sepatu
+            # Denormalisasi mask untuk visualisasi ([-1, 1] -> [0, 255])
+            mask_display = (shoe_mask[:,:,0] * 0.5 + 0.5) * 255.0
+            st.image(mask_display.astype(np.uint8), caption=f"DEBUG: Mask Sepatu (Min: {np.min(shoe_mask):.2f}, Max: {np.max(shoe_mask):.2f})", clamp=True)
+            st.warning("Mask harus mengisolasi area sepatu. Jika mask serba putih atau hitam, input model salah.")
+
+        with st.spinner('⏳ Sedang Menerapkan Try-On Virtual...'):
             try:
                 # Inferensi
-                prediction = netG(input_tensor, training=False)[0].numpy()
+                prediction_raw = netG(input_tensor, training=False)[0].numpy()
                 
-                # Denormalisasi (Sudah benar: [-1, 1] -> [0, 255])
-                prediction = (prediction * 0.5 + 0.5) * 255.0
+                if debug_mode:
+                    # DEBUG 2: Cek Output Mentah Model
+                    st.markdown("---")
+                    st.subheader("DEBUG: Output Mentah Model (Rentang [-1, 1])")
+                    st.code(f"""
+    Min Output Mentah: {np.min(prediction_raw):.6f}
+    Max Output Mentah: {np.max(prediction_raw):.6f}
+    Mean Output Mentah: {np.mean(prediction_raw):.6f}
+    
+    Jika Min & Max mendekati 1, hasil akan putih.
+    Jika Min & Max mendekati -1, hasil akan hitam.
+                    """)
+                    st.markdown("---")
+                
+                # Denormalisasi ([-1, 1] -> [0, 255])
+                prediction = (prediction_raw * 0.5 + 0.5) * 255.0
                 prediction = prediction.clip(0, 255).astype(np.uint8)
                 
                 # Tampilkan hasil
@@ -231,34 +273,41 @@ netG = load_generator_model(MODEL_G_PATH)
 st.title("👟 Aplikasi Virtual Try-On Sepatu")
 st.markdown("---")
 
+# --- Bilah Sisi (Sidebar) untuk Debugging ---
+with st.sidebar:
+    st.header("Opsi Debugging")
+    debug_mode = st.checkbox("Aktifkan Mode Debugging (Tampilkan Mask & Nilai Output Mentah)", value=False)
+    st.info("Gunakan ini untuk menganalisis mengapa hasil Anda putih total. Cek nilai Min/Max Output Mentah.")
+
 def shoe_catalog(shoe_assets):
     st.header("1. Pilih Sepatu dari Katalog")
     st.markdown("*(Klik tombol 'Pilih' di bawah gambar untuk mengaktifkan Try-On)*")
     
+    # Ambil 4 sepatu pertama untuk contoh
     cols = st.columns(4)
     
-    for i, shoe_path in enumerate(shoe_assets):
+    for i, shoe_path in enumerate(shoe_assets[:4]):
         with cols[i % 4]:
-            shoe_name = os.path.basename(shoe_path)
+            shoe_name = os.path.basename(shoe_path).split('.')[0]
             
-            is_selected = (shoe_path == st.session_state['selected_shoe_path'])
+            is_selected = (shoe_path == st.session_state.get('selected_shoe_path'))
             
-            # Rendering gambar yang stabil
             st.image(shoe_path, caption="", use_column_width=True)
             
             button_label = "✅ Dipilih" if is_selected else "Pilih"
             button_type = "secondary" if is_selected else "primary"
             
-            # Tombol untuk memilih sepatu
             if st.button(button_label, key=f'select_{shoe_name}', type=button_type, use_container_width=True):
                 st.session_state['selected_shoe_path'] = shoe_path
                 st.session_state['feet_input_data'] = None 
                 st.rerun() 
 
+# --- Tata Letak Utama ---
 col_input, col_result = st.columns([1, 1], gap="large")
 
 with col_input:
-    shoe_assets = get_asset_paths('shoes')
+    # Asset dummy (Ganti jika Anda memiliki folder assets/shoes)
+    shoe_assets = get_asset_paths('shoes') or [f"https://placehold.co/256x256/2ecc71/ffffff?text=Sepatu+{i}" for i in range(4)]
     shoe_catalog(shoe_assets)
 
 st.markdown("---") 
@@ -283,8 +332,11 @@ if st.session_state['selected_shoe_path']:
         
         # LOGIKA PILIH DARI GALERI
         if input_method == "Pilih dari Galeri":
-            feet_assets = get_asset_paths('feet')
+            feet_assets = get_asset_paths('feet') or [f"https://placehold.co/256x256/3498db/ffffff?text=Kaki+{i}" for i in range(3)]
             feet_options = [os.path.basename(p) for p in feet_assets]
+            
+            # Jika menggunakan placeholder, gunakan URL lengkap
+            feet_map = {os.path.basename(p): p for p in feet_assets}
             
             selected_feet_name = st.selectbox(
                 "Pilih Bentuk Kaki Galeri:", 
@@ -292,7 +344,7 @@ if st.session_state['selected_shoe_path']:
                 index=0, 
                 key='select_feet_gallery'
             )
-            input_feet_data = os.path.join('assets', 'feet', selected_feet_name)
+            input_feet_data = feet_map.get(selected_feet_name, selected_feet_name)
 
         # LOGIKA OPSI UNGGAH
         else:
@@ -310,10 +362,7 @@ if st.session_state['selected_shoe_path']:
             st.markdown("---")
             st.subheader("Pratinjau Citra Kaki:")
             try:
-                if input_method == "Pilih dari Galeri":
-                    st.image(input_feet_data, caption=os.path.basename(input_feet_data), use_column_width=True)
-                else:
-                    st.image(input_feet_data, caption="Citra Kaki Unggahan Anda", use_column_width=True)
+                st.image(input_feet_data, caption="Citra Kaki Input", use_column_width=True)
                 st.session_state['feet_input_data'] = input_feet_data 
             except Exception as e:
                 st.warning(f"Tidak dapat menampilkan pratinjau gambar: {e}")
@@ -322,14 +371,17 @@ if st.session_state['selected_shoe_path']:
             st.session_state['feet_input_data'] = None
 
         st.markdown("<br>", unsafe_allow_html=True)
+        
         # TOMBOL TRY-ON
         if st.button("✨ Terapkan Virtual Try-On", key='tryon_button', type="primary", use_container_width=True):
             if st.session_state['selected_shoe_path'] and st.session_state['feet_input_data']:
-                # Panggil inference dengan auto-masking
+                # Panggil inference dengan auto-masking dan mode debug
                 process_inference(
                     st.session_state['selected_shoe_path'], 
                     st.session_state['feet_input_data'], 
-                    netG, col_result
+                    netG, 
+                    col_result, # Kirim container kolom hasil
+                    debug_mode  # Kirim status debug
                 )
             else:
                 with col_result: 
