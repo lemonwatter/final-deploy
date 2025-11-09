@@ -14,7 +14,7 @@ from functools import lru_cache
 # KONFIGURASI DAN UTILITAS
 # ==============================================================================
 IMG_SIZE = 256
-MODEL_G_PATH = 'models/pix2pix_tryon_G.h5' # Dipastikan model dimuat secara lokal
+MODEL_G_PATH = 'models/pix2pix_tryon_G.h5' 
 
 # Konfigurasi logging untuk debugging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -27,10 +27,7 @@ st.set_page_config(
 )
 
 # --- 1. Re-Definisi Arsitektur Model (Generator UNet) ---
-# Disesuaikan agar SAMA PERSIS dengan kode training Anda (tensor.py):
-# - Input 7 Channel
-# - LeakyReLU(0.2)
-# - Filter awal 32
+# Disesuaikan agar SAMA PERSIS dengan kode training Anda: Input 7 Channel, Filter 32, LeakyReLU(0.2)
 
 def downsample(filters, size, apply_batchnorm=True):
     initializer = tf.random_normal_initializer(0., 0.02)
@@ -88,16 +85,14 @@ def GeneratorUNet(input_shape=(IMG_SIZE, IMG_SIZE, 7), output_channels=3):
         x = down(x)
         skips.append(x)
     
-    # Upward Pass (Sesuai logika tensor.py Anda)
-
-    # Memulai dari Bottleneck (skips[4])
+    # Upward Pass 
+    
+    # U1 menyambung ke skips[3] (L4)
     x = up_stack[0](skips[-1]) 
-    x = Concatenate()([x, skips[3]]) # U1 koneksi ke L4 (skips[3])
+    x = Concatenate()([x, skips[3]]) 
 
     # Melakukan upsampling U2, U3, U4
-    # Sisa up_stack: [U2, U3, U4]
-    # Sisa skip connection: skips[2], skips[1], skips[0]
-    
+    # skips[2], skips[1], skips[0]
     for up, skip_idx in zip(up_stack[1:], [2, 1, 0]):
         x = up(x)
         x = Concatenate()([x, skips[skip_idx]])
@@ -109,7 +104,8 @@ def GeneratorUNet(input_shape=(IMG_SIZE, IMG_SIZE, 7), output_channels=3):
 
 # --- 2. Fungsi Pemuatan Model dan Aset ---
 
-@st.cache_resource
+# Matikan cache untuk sementara jika ada masalah di cache Streamlit
+# @st.cache_resource
 def load_generator_model(model_path):
     """Memuat model generator (netG) dari path lokal."""
     logger.info(f"Attempting to load model from: {model_path}")
@@ -136,7 +132,6 @@ def load_generator_model(model_path):
 
 def get_asset_paths(folder_name):
     """Mendapatkan daftar path file gambar dari folder assets."""
-    # Mencari .jpg, .png, atau .jpeg
     files = glob.glob(os.path.join('assets', folder_name, '*.[jp][pn]g'), recursive=True)
     files.extend(glob.glob(os.path.join('assets', folder_name, '*.jpeg'), recursive=True))
     return files
@@ -192,7 +187,8 @@ def process_inference(shoe_path, feet_data, netG, result_container):
                 
                 # Tampilkan hasil
                 st.subheader("🎉 Hasil Virtual Try-On")
-                st.image(prediction, caption="Hasil Penggabungan Sepatu dan Kaki", use_column_width=True)
+                # Menggunakan use_column_width=True (deprecated, tapi biarkan dulu)
+                st.image(prediction, caption="Hasil Penggabungan Sepatu dan Kaki", use_column_width=True) 
                 
             except Exception as e:
                 st.error(f"❌ Terjadi kesalahan saat inferensi: {e}")
@@ -225,7 +221,7 @@ def shoe_catalog(shoe_assets):
             
             is_selected = (shoe_path == st.session_state['selected_shoe_path'])
             
-            # Rendering gambar dengan metode Streamlit yang stabil
+            # Rendering gambar yang stabil
             st.image(shoe_path, caption="", use_column_width=True)
             
             button_label = "✅ Dipilih" if is_selected else "Pilih"
@@ -234,7 +230,6 @@ def shoe_catalog(shoe_assets):
             # Tombol untuk memilih sepatu
             if st.button(button_label, key=f'select_{shoe_name}', type=button_type, use_container_width=True):
                 st.session_state['selected_shoe_path'] = shoe_path
-                # Reset input kaki saat sepatu baru dipilih
                 st.session_state['feet_input_data'] = None 
                 st.rerun() 
 
