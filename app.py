@@ -154,7 +154,7 @@ def load_image(image_data):
     img = np.array(img, dtype=np.float32)
     return img
 
-def process_inference(shoe_path, feet_data, netG, result_container):
+def process_inference(shoe_path, feet_data, netG, result_container, mask_value):
     """Memproses gambar sepatu dan kaki, melakukan inferensi, dan menampilkan hasil."""
     
     shoe_img = load_image(shoe_path)
@@ -167,17 +167,17 @@ def process_inference(shoe_path, feet_data, netG, result_container):
     shoe_norm = normalize(shoe_img) # Rentang [-1, 1]
     feet_norm = normalize(feet_img) # Rentang [-1, 1]
     
-    # === PERBAIKAN: MENGATUR 7 CHANNEL INPUT DAN MENGATASI OUTPUT PUTIH ===
-    # Karena output putih, kita asumsikan mask Biner/Depth Anda dinormalisasi ke rentang [-1, 1].
-    # Untuk mengatasi output putih, kita coba mask yang semua nilainya di tengah rentang, yaitu 0.
-    # Nilai 0 pada rentang [-1, 1] adalah nilai abu-abu 127.5 pada rentang [0, 255].
-    mask_channel_float = np.zeros((IMG_SIZE, IMG_SIZE, 1), dtype=np.float32) 
+    # === PENGATURAN 7 CHANNEL INPUT DENGAN NILAI MASKING YANG DITENTUKAN ===
+    # Kita mengisi channel ke-7 (mask) dengan nilai float yang dipilih (mask_value)
+    # untuk menguji kompatibilitas dengan training data.
+    mask_channel_float = np.full((IMG_SIZE, IMG_SIZE, 1), mask_value, dtype=np.float32) 
+    
     input_tensor = np.concatenate([shoe_norm, feet_norm, mask_channel_float], axis=-1) # Total 7 channels!
     
     input_tensor = np.expand_dims(input_tensor, axis=0) # Tambah dimensi batch
 
     with result_container:
-        with st.spinner('⏳ Sedang Menerapkan Try-On Virtual...'):
+        with st.spinner(f'⏳ Sedang Menerapkan Try-On Virtual (Mask Value: {mask_value})...'):
             try:
                 # Inferensi
                 prediction = netG(input_tensor, training=False)[0].numpy()
@@ -188,7 +188,7 @@ def process_inference(shoe_path, feet_data, netG, result_container):
                 
                 # Tampilkan hasil
                 st.subheader("🎉 Hasil Virtual Try-On")
-                st.image(prediction, caption="Hasil Penggabungan Sepatu dan Kaki", use_column_width=True) 
+                st.image(prediction, caption=f"Hasil (Mask Value: {mask_value})", use_column_width=True) 
                 
             except Exception as e:
                 st.error(f"❌ Terjadi kesalahan saat inferensi: {e}")
@@ -202,7 +202,9 @@ if 'selected_shoe_path' not in st.session_state:
     st.session_state['selected_shoe_path'] = None
 if 'feet_input_data' not in st.session_state:
     st.session_state['feet_input_data'] = None
-    
+if 'mask_value' not in st.session_state:
+    st.session_state['mask_value'] = 0.0 # Default ke nilai tengah
+
 # Muat Model
 netG = load_generator_model(MODEL_G_PATH)
 
@@ -248,6 +250,17 @@ if st.session_state['selected_shoe_path']:
         
         st.subheader("Sepatu yang Dipilih:")
         st.image(st.session_state['selected_shoe_path'], use_column_width=True)
+        st.markdown("---")
+        
+        # OPSI MASKING BARU UNTUK DEBUGGING
+        st.subheader("⚙️ Debugging Mask Channel (Channel ke-7)")
+        st.caption("Pilih nilai *placeholder* mask yang digunakan selama *training* (biasanya 0, 0.5, atau 1).")
+        st.session_state['mask_value'] = st.select_slider(
+            'Pilih Nilai Mask (Rentang [-1, 1]):',
+            options=[-1.0, 0.0, 1.0],
+            value=st.session_state['mask_value'],
+            key='mask_slider'
+        )
         st.markdown("---")
         
         # OPSI INPUT KAKI (Radio Button)
@@ -303,7 +316,13 @@ if st.session_state['selected_shoe_path']:
         # TOMBOL TRY-ON
         if st.button("✨ Terapkan Virtual Try-On", key='tryon_button', type="primary", use_container_width=True):
             if st.session_state['selected_shoe_path'] and st.session_state['feet_input_data']:
-                process_inference(st.session_state['selected_shoe_path'], st.session_state['feet_input_data'], netG, col_result)
+                # Panggil inference dengan nilai mask yang dipilih
+                process_inference(
+                    st.session_state['selected_shoe_path'], 
+                    st.session_state['feet_input_data'], 
+                    netG, col_result, 
+                    st.session_state['mask_value'] # Nilai mask yang dipilih
+                )
             else:
                 with col_result: 
                     st.warning("Mohon pilih sepatu dan sediakan citra kaki terlebih dahulu.")
