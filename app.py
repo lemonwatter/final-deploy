@@ -154,7 +154,29 @@ def load_image(image_data):
     img = np.array(img, dtype=np.float32)
     return img
 
-def process_inference(shoe_path, feet_data, netG, result_container, mask_value):
+def create_simple_mask(image_norm):
+    """
+    Membuat mask biner sederhana berdasarkan ambang batas untuk mengasumsikan area sepatu.
+    Ini adalah auto-masking sederhana untuk channel ke-7.
+    Kita asumsikan sepatu adalah area yang berwarna (bukan hitam atau putih total).
+    Normalisasi ke rentang [-1, 1].
+    """
+    # Menghitung ambang batas (contoh: rata-rata nilai piksel di atas ambang batas 0.5)
+    # Karena input sudah dinormalisasi ke [-1, 1], kita gunakan ambang batas dekat 0 (abu-abu tengah)
+    
+    # Ambil nilai absolut rata-rata RGB
+    mean_abs_rgb = np.mean(np.abs(image_norm), axis=-1, keepdims=True)
+    
+    # Ambil ambang batas 0.15 (relatif dekat dengan 0 atau abu-abu tengah)
+    mask = tf.cast(mean_abs_rgb > 0.15, tf.float32).numpy()
+    
+    # Normalisasi mask biner (0 atau 1) ke [-1, 1]
+    # (0 -> -1, 1 -> 1)
+    mask = mask * 2 - 1 
+    
+    return mask
+
+def process_inference(shoe_path, feet_data, netG, result_container):
     """Memproses gambar sepatu dan kaki, melakukan inferensi, dan menampilkan hasil."""
     
     shoe_img = load_image(shoe_path)
@@ -167,17 +189,17 @@ def process_inference(shoe_path, feet_data, netG, result_container, mask_value):
     shoe_norm = normalize(shoe_img) # Rentang [-1, 1]
     feet_norm = normalize(feet_img) # Rentang [-1, 1]
     
-    # === PENGATURAN 7 CHANNEL INPUT DENGAN NILAI MASKING YANG DITENTUKAN ===
-    # Kita mengisi channel ke-7 (mask) dengan nilai float yang dipilih (mask_value)
-    # untuk menguji kompatibilitas dengan training data.
-    mask_channel_float = np.full((IMG_SIZE, IMG_SIZE, 1), mask_value, dtype=np.float32) 
+    # === PENGATURAN 7 CHANNEL INPUT: AUTO-MASKING ===
+    # Buat mask dari citra sepatu yang dipilih.
+    shoe_mask = create_simple_mask(shoe_norm)
     
-    input_tensor = np.concatenate([shoe_norm, feet_norm, mask_channel_float], axis=-1) # Total 7 channels!
+    # Gabungkan input (Sepatu 3ch + Kaki 3ch + Mask Sepatu 1ch)
+    input_tensor = np.concatenate([shoe_norm, feet_norm, shoe_mask], axis=-1) # Total 7 channels!
     
     input_tensor = np.expand_dims(input_tensor, axis=0) # Tambah dimensi batch
 
     with result_container:
-        with st.spinner(f'⏳ Sedang Menerapkan Try-On Virtual (Mask Value: {mask_value})...'):
+        with st.spinner('⏳ Sedang Menerapkan Try-On Virtual (Menggunakan Auto-Masking)...'):
             try:
                 # Inferensi
                 prediction = netG(input_tensor, training=False)[0].numpy()
@@ -188,7 +210,7 @@ def process_inference(shoe_path, feet_data, netG, result_container, mask_value):
                 
                 # Tampilkan hasil
                 st.subheader("🎉 Hasil Virtual Try-On")
-                st.image(prediction, caption=f"Hasil (Mask Value: {mask_value})", use_column_width=True) 
+                st.image(prediction, caption=f"Hasil Try-On (Auto-Masking)", use_column_width=True) 
                 
             except Exception as e:
                 st.error(f"❌ Terjadi kesalahan saat inferensi: {e}")
@@ -202,9 +224,7 @@ if 'selected_shoe_path' not in st.session_state:
     st.session_state['selected_shoe_path'] = None
 if 'feet_input_data' not in st.session_state:
     st.session_state['feet_input_data'] = None
-if 'mask_value' not in st.session_state:
-    st.session_state['mask_value'] = 0.0 # Default ke nilai tengah
-
+    
 # Muat Model
 netG = load_generator_model(MODEL_G_PATH)
 
@@ -250,17 +270,6 @@ if st.session_state['selected_shoe_path']:
         
         st.subheader("Sepatu yang Dipilih:")
         st.image(st.session_state['selected_shoe_path'], use_column_width=True)
-        st.markdown("---")
-        
-        # OPSI MASKING BARU UNTUK DEBUGGING
-        st.subheader("⚙️ Debugging Mask Channel (Channel ke-7)")
-        st.caption("Pilih nilai *placeholder* mask yang digunakan selama *training* (biasanya 0, 0.5, atau 1).")
-        st.session_state['mask_value'] = st.select_slider(
-            'Pilih Nilai Mask (Rentang [-1, 1]):',
-            options=[-1.0, 0.0, 1.0],
-            value=st.session_state['mask_value'],
-            key='mask_slider'
-        )
         st.markdown("---")
         
         # OPSI INPUT KAKI (Radio Button)
@@ -316,12 +325,11 @@ if st.session_state['selected_shoe_path']:
         # TOMBOL TRY-ON
         if st.button("✨ Terapkan Virtual Try-On", key='tryon_button', type="primary", use_container_width=True):
             if st.session_state['selected_shoe_path'] and st.session_state['feet_input_data']:
-                # Panggil inference dengan nilai mask yang dipilih
+                # Panggil inference dengan auto-masking
                 process_inference(
                     st.session_state['selected_shoe_path'], 
                     st.session_state['feet_input_data'], 
-                    netG, col_result, 
-                    st.session_state['mask_value'] # Nilai mask yang dipilih
+                    netG, col_result
                 )
             else:
                 with col_result: 
