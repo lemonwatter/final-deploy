@@ -8,6 +8,7 @@ import os
 import glob
 import io 
 import logging
+from functools import lru_cache
 
 # ==============================================================================
 # KONFIGURASI DAN UTILITAS
@@ -54,29 +55,25 @@ def upsample(filters, size, apply_dropout=False):
     return result
 
 def GeneratorUNet(input_shape=(IMG_SIZE, IMG_SIZE, 7), output_channels=3):
-    # PENTING: Input 7 channel sesuai training Anda (Sepatu 3ch + Kaki 3ch + Mask 1ch)
+    # PENTING: Input 7 channel sesuai training Anda
     inputs = Input(shape=input_shape) 
 
     # Downsampling (5 Lapisan)
     down_stack = [
         # PENTING: Filter awal 32 sesuai training Anda
-        downsample(32, 4, apply_batchnorm=False), # L1
-        downsample(64, 4), # L2
-        downsample(128, 4), # L3
-        downsample(256, 4), # L4
-        downsample(512, 4, apply_batchnorm=False), # L5: Bottleneck
+        downsample(32, 4, apply_batchnorm=False), # L1 (Output: 128x128x32)
+        downsample(64, 4),                       # L2 (Output: 64x64x64)
+        downsample(128, 4),                      # L3 (Output: 32x32x128)
+        downsample(256, 4),                      # L4 (Output: 16x16x256)
+        downsample(512, 4, apply_batchnorm=False), # L5: Bottleneck (Output: 8x8x512)
     ]
 
     # Upsampling (4 Lapisan)
     up_stack = [
-        # U1: 
-        upsample(256, 4, apply_dropout=True), 
-        # U2: 
-        upsample(128, 4), 
-        # U3: 
-        upsample(64, 4), 
-        # U4: 
-        upsample(32, 4), 
+        upsample(256, 4, apply_dropout=True), # U1 (Koneksi ke L4)
+        upsample(128, 4),                     # U2 (Koneksi ke L3)
+        upsample(64, 4),                      # U3 (Koneksi ke L2)
+        upsample(32, 4),                      # U4 (Koneksi ke L1)
     ]
     
     initializer = tf.random_normal_initializer(0., 0.02)
@@ -91,20 +88,19 @@ def GeneratorUNet(input_shape=(IMG_SIZE, IMG_SIZE, 7), output_channels=3):
         x = down(x)
         skips.append(x)
     
-    # Upward Pass (sesuai logika tensor.py Anda)
+    # Upward Pass (Sesuai logika tensor.py Anda)
 
-    # U1 menyambung ke skips[3] (256 filters)
-    # skips[-1] adalah bottleneck (skips[4])
+    # Memulai dari Bottleneck (skips[4])
     x = up_stack[0](skips[-1]) 
-    x = Concatenate()([x, skips[3]]) # Tambahkan koneksi skip dari L4 (skips[3])
+    x = Concatenate()([x, skips[3]]) # U1 koneksi ke L4 (skips[3])
 
     # Melakukan upsampling U2, U3, U4
-    # reversed(skips[1:-1]) = skips[2], skips[1] (Kita mulai dari U2, jadi skips[2] dulu)
-    # Sisa lapisan upstack adalah [U2, U3, U4]
+    # Sisa up_stack: [U2, U3, U4]
+    # Sisa skip connection: skips[2], skips[1], skips[0]
     
     for up, skip_idx in zip(up_stack[1:], [2, 1, 0]):
-         x = up(x)
-         x = Concatenate()([x, skips[skip_idx]])
+        x = up(x)
+        x = Concatenate()([x, skips[skip_idx]])
 
     # Final Layer
     x = last(x)
@@ -135,16 +131,18 @@ def load_generator_model(model_path):
         return netG
     except Exception as e:
         logger.error(f"FAILED TO LOAD MODEL: {e}")
-        st.error(f"❌ Gagal memuat model. Error Incompatibility. Detail: {e}")
+        st.error(f"❌ Gagal memuat model. Error: {e}")
         st.stop()
 
 def get_asset_paths(folder_name):
     """Mendapatkan daftar path file gambar dari folder assets."""
-    return glob.glob(os.path.join('assets', folder_name, '*.[jp][pn]g'), recursive=True)
+    # Mencari .jpg, .png, atau .jpeg
+    files = glob.glob(os.path.join('assets', folder_name, '*.[jp][pn]g'), recursive=True)
+    files.extend(glob.glob(os.path.join('assets', folder_name, '*.jpeg'), recursive=True))
+    return files
 
 # --- 3. Pre-pemrosesan dan Inferensi ---
-# Di sini kita perlu meniru apa yang dilakukan oleh 7 channel input.
-# Asumsi: Channel ke-7 adalah Mask Biner (semua 1)
+
 def normalize(image):
     return (image / 127.5) - 1
 
@@ -177,7 +175,6 @@ def process_inference(shoe_path, feet_data, netG, result_container):
     
     # === PENTING: MENGATUR 7 CHANNEL INPUT ===
     # Gabungkan input (Sepatu 3ch + Kaki 3ch). Tambahkan 1 Channel Mask biner (semua 1)
-    # Ini meniru mask yang mungkin Anda gunakan di training (sebagai placeholder)
     mask_channel = np.ones((IMG_SIZE, IMG_SIZE, 1), dtype=np.float32)
     input_tensor = np.concatenate([shoe_norm, feet_norm, mask_channel], axis=-1) # Total 7 channels!
     
@@ -210,17 +207,15 @@ if 'selected_shoe_path' not in st.session_state:
 if 'feet_input_data' not in st.session_state:
     st.session_state['feet_input_data'] = None
     
-# Muat Model (netG akan mencoba memuat model dengan arsitektur 7-channel yang baru)
+# Muat Model
 netG = load_generator_model(MODEL_G_PATH)
 
 st.title("👟 Aplikasi Virtual Try-On Sepatu")
 st.markdown("---")
 
-# [Sisa UI logic tetap sama]
-
 def shoe_catalog(shoe_assets):
     st.header("1. Pilih Sepatu dari Katalog")
-    st.markdown("*(Klik pada gambar sepatu untuk mengaktifkan Try-On)*")
+    st.markdown("*(Klik tombol 'Pilih' di bawah gambar untuk mengaktifkan Try-On)*")
     
     cols = st.columns(4)
     
@@ -230,13 +225,16 @@ def shoe_catalog(shoe_assets):
             
             is_selected = (shoe_path == st.session_state['selected_shoe_path'])
             
+            # Rendering gambar dengan metode Streamlit yang stabil
             st.image(shoe_path, caption="", use_column_width=True)
             
             button_label = "✅ Dipilih" if is_selected else "Pilih"
             button_type = "secondary" if is_selected else "primary"
             
+            # Tombol untuk memilih sepatu
             if st.button(button_label, key=f'select_{shoe_name}', type=button_type, use_container_width=True):
                 st.session_state['selected_shoe_path'] = shoe_path
+                # Reset input kaki saat sepatu baru dipilih
                 st.session_state['feet_input_data'] = None 
                 st.rerun() 
 
@@ -248,6 +246,7 @@ with col_input:
 
 st.markdown("---") 
 
+# --- Bagian Try-On (Hanya muncul jika sepatu sudah dipilih) ---
 if st.session_state['selected_shoe_path']:
     with col_input:
         st.header("2. Sediakan Citra Kaki")
@@ -256,6 +255,7 @@ if st.session_state['selected_shoe_path']:
         st.image(st.session_state['selected_shoe_path'], use_column_width=True)
         st.markdown("---")
         
+        # OPSI INPUT KAKI (Radio Button)
         input_method = st.radio(
             "Pilih Metode Input Kaki:",
             ("Pilih dari Galeri", "Unggah Citra Kaki Sendiri"),
@@ -264,6 +264,7 @@ if st.session_state['selected_shoe_path']:
         
         input_feet_data = None
         
+        # LOGIKA PILIH DARI GALERI
         if input_method == "Pilih dari Galeri":
             feet_assets = get_asset_paths('feet')
             feet_options = [os.path.basename(p) for p in feet_assets]
@@ -276,6 +277,7 @@ if st.session_state['selected_shoe_path']:
             )
             input_feet_data = os.path.join('assets', 'feet', selected_feet_name)
 
+        # LOGIKA OPSI UNGGAH
         else:
             uploaded_file = st.file_uploader(
                 "Unggah Citra Kaki (JPG/PNG)", 
@@ -286,6 +288,7 @@ if st.session_state['selected_shoe_path']:
                 input_feet_data = uploaded_file
             
         
+        # Menampilkan citra kaki yang dipilih di kolom input
         if input_feet_data is not None:
             st.markdown("---")
             st.subheader("Pratinjau Citra Kaki:")
@@ -302,6 +305,7 @@ if st.session_state['selected_shoe_path']:
             st.session_state['feet_input_data'] = None
 
         st.markdown("<br>", unsafe_allow_html=True)
+        # TOMBOL TRY-ON
         if st.button("✨ Terapkan Virtual Try-On", key='tryon_button', type="primary", use_container_width=True):
             if st.session_state['selected_shoe_path'] and st.session_state['feet_input_data']:
                 process_inference(st.session_state['selected_shoe_path'], st.session_state['feet_input_data'], netG, col_result)
@@ -309,16 +313,18 @@ if st.session_state['selected_shoe_path']:
                 with col_result: 
                     st.warning("Mohon pilih sepatu dan sediakan citra kaki terlebih dahulu.")
 else:
+    # Tampilkan instruksi jika belum ada sepatu yang dipilih
     with col_result:
         st.header("Selamat Datang!")
-        st.info("👈 Silakan klik salah satu gambar sepatu di katalog (kolom kiri) untuk memulai Virtual Try-On.")
+        st.info("👈 Silakan klik salah satu tombol 'Pilih' di katalog (kolom kiri) untuk memulai Virtual Try-On.")
         st.markdown("""
         **Langkah Selanjutnya:**
-        1. Pilih Sepatu.
+        1. Pilih Sepatu dengan mengklik tombol 'Pilih'.
         2. Pilih sumber gambar kaki (Galeri atau Unggah).
         3. Klik tombol Try-On untuk melihat hasilnya di kolom ini.
         """)
 
+# Tambahkan sedikit CSS custom untuk tampilan Streamlit yang lebih baik
 st.markdown("""
 <style>
 .stButton>button {
