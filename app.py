@@ -28,7 +28,6 @@ st.set_page_config(
 # --- 1. Re-Definisi Arsitektur Model (Generator UNet) ---
 # Dibiarkan sama persis dengan kode Anda untuk memastikan kompatibilitas weights
 def downsample(filters, size, apply_batchnorm=True):
-    # ... (Arsitektur Downsample tetap sama)
     initializer = tf.random_normal_initializer(0., 0.02)
     result = tf.keras.Sequential()
     result.add(Conv2D(filters, size, strides=2, padding='same',
@@ -39,7 +38,6 @@ def downsample(filters, size, apply_batchnorm=True):
     return result
 
 def upsample(filters, size, apply_dropout=False):
-    # ... (Arsitektur Upsample tetap sama)
     initializer = tf.random_normal_initializer(0., 0.02)
     result = tf.keras.Sequential()
     result.add(Conv2DTranspose(filters, size, strides=2, padding='same',
@@ -92,7 +90,7 @@ def GeneratorUNet(input_shape=(IMG_SIZE, IMG_SIZE, 7), output_channels=3):
 
 @st.cache_resource
 def load_generator_model(model_path):
-    # ... (Fungsi loading model tetap sama)
+    """Memuat model generator (netG) dari path lokal."""
     logger.info(f"Attempting to load model from: {model_path}")
 
     if not os.path.exists(model_path):
@@ -101,12 +99,19 @@ def load_generator_model(model_path):
         return None
     
     try:
-        netG = tf.keras.models.load_model(model_path, compile=False, custom_objects={'LeakyReLU': LeakyReLU})
+        # FIX: Tambahkan custom_objects untuk mengenali LeakyReLU
+        netG = tf.keras.models.load_model(
+            model_path, 
+            compile=False, 
+            custom_objects={'LeakyReLU': tf.keras.layers.LeakyReLU}
+        )
         st.success("✅ Model Generator berhasil dimuat.")
         return netG
     except Exception as e:
         logger.warning(f"Gagal memuat model penuh: {e}. Mencoba memuat weights ke arsitektur kustom.")
+        st.warning(f"⚠️ Gagal memuat model penuh. Mencoba memuat weights. Error: {e}")
         try:
+            # Fallback: jika hanya weights yang disimpan
             netG = GeneratorUNet()
             dummy_input = np.zeros((1, IMG_SIZE, IMG_SIZE, 7), dtype=np.float32)
             netG(dummy_input) 
@@ -153,31 +158,18 @@ def load_image(image_data):
     return img
 
 def create_mask_from_shoe(shoe_img_norm):
-    # Mengambil rata-rata 3 channel, lalu mengubah ke 1 channel mask
     shoe_mask = np.mean(shoe_img_norm, axis=-1, keepdims=True)
     return shoe_mask
 
 def blend_result_with_feet(feet_original_img, generated_shoe_img):
-    """
-    Menggabungkan (overlay) hasil prediksi ke gambar kaki asli.
-    """
     
-    # 1. Tentukan area yang akan di-overlay (Area Sepatu)
-    
-    # Konversi hasil prediksi ke skala abu-abu dan normalisasi ke [0, 1]
     generated_gray = np.mean(generated_shoe_img, axis=-1) / 255.0
     
-    # Thresholding: 0.8 biasanya berfungsi untuk memisahkan objek gelap/berwarna dari latar belakang terang
-    # Masker: Area sepatu (foreground) akan bernilai 1.0, area background 0.0
-    mask = (generated_gray < 0.85).astype(np.float32) # Toleransi sedikit dinaikkan ke 0.85
-    mask = np.expand_dims(mask, axis=-1) # Kembalikan ke (H, W, 1)
+    mask = (generated_gray < 0.85).astype(np.float32) 
+    mask = np.expand_dims(mask, axis=-1) 
 
-    # 2. Blend: (Foreground * Mask) + (Background * (1 - Mask))
-    
-    # Sepatu yang dihasilkan (Foreground) dikalikan dengan Mask
     foreground = generated_shoe_img * mask
 
-    # Kaki asli (Background) dikalikan dengan kebalikan dari Mask (area non-sepatu)
     background = feet_original_img * (1 - mask)
     
     blended_image = foreground + background
@@ -186,7 +178,6 @@ def blend_result_with_feet(feet_original_img, generated_shoe_img):
 
 
 def process_inference(shoe_path, feet_data, netG, result_container, mask_source, mask_value):
-    """Memproses gambar, inferensi, dan menampilkan hasil."""
     
     shoe_img_orig = load_image(shoe_path)
     feet_img_orig = load_image(feet_data)
@@ -195,11 +186,9 @@ def process_inference(shoe_path, feet_data, netG, result_container, mask_source,
         result_container.error("Gagal memuat atau memproses salah satu gambar. Pastikan gambar ada dan valid.")
         return 
 
-    # Normalisasi untuk MODEL
     shoe_norm = normalize(shoe_img_orig) 
     feet_norm = normalize(feet_img_orig) 
     
-    # --- PENGATURAN MASK 7th CHANNEL (PILIHAN PENGGUNA) ---
     if mask_source == "Masker Sepatu (Berdasarkan Warna Sepatu)":
         mask_channel_float = create_mask_from_shoe(shoe_norm)
         mask_label = "Shoe Channel Mask"
@@ -207,23 +196,17 @@ def process_inference(shoe_path, feet_data, netG, result_container, mask_source,
         mask_channel_float = np.full((IMG_SIZE, IMG_SIZE, 1), mask_value, dtype=np.float32) 
         mask_label = f"Fixed Value: {mask_value}"
     
-    # Concatenation: (H, W, 3 Sepatu) + (H, W, 3 Kaki) + (H, W, 1 Mask) = (H, W, 7)
     input_tensor = np.concatenate([shoe_norm, feet_norm, mask_channel_float], axis=-1) 
-    input_tensor = np.expand_dims(input_tensor, axis=0) # Tambah dimensi batch (1, H, W, 7)
+    input_tensor = np.expand_dims(input_tensor, axis=0)
 
     with result_container:
         with st.spinner(f'⏳ Sedang Menerapkan Try-On Virtual (Mask Source: {mask_label})...'):
             try:
-                # 1. Inferensi Model (Output 3 channel: Sepatu + background)
                 prediction_norm = netG(input_tensor, training=False)[0].numpy()
-                
-                # 2. Denormalisasi Output (Rentang [0, 255])
                 generated_shoe_img_uint8 = denormalize(prediction_norm)
                 
-                # --- BLENDING ---
                 final_output = blend_result_with_feet(feet_img_orig, generated_shoe_img_uint8)
                 
-                # Tampilkan hasil
                 st.subheader("🎉 Hasil Virtual Try-On (dengan Blending)")
                 st.image(final_output, caption=f"Hasil Try-On (Mask Source: {mask_label})", use_column_width=True) 
                 st.balloons()
@@ -236,7 +219,6 @@ def process_inference(shoe_path, feet_data, netG, result_container, mask_source,
                     st.image(generated_shoe_img_uint8, caption="Output Mentah Model (Generated Shoe)", use_column_width=True)
                     
                 with cols[1]:
-                    # Visualisasi Masker Input ke Model (Channel ke-7)
                     if mask_source == "Masker Sepatu (Berdasarkan Warna Sepatu)":
                         mask_display = (mask_channel_float * 127.5 + 127.5).astype(np.uint8)
                     else:
@@ -280,8 +262,8 @@ with st.sidebar:
         "Nilai Tetap (-1.0)", 
         "Nilai Tetap (0.0)", 
         "Nilai Tetap (1.0)",
-        "Zero Mask (All 0s)", # Opsi baru
-        "One Mask (All 1s)"   # Opsi baru
+        "Zero Mask (All 0s)", 
+        "One Mask (All 1s)"  
     ]
     
     mask_source = st.selectbox(
@@ -345,7 +327,6 @@ with col_input:
 
 st.markdown("---") 
 
-# --- Bagian Input Kaki dan Try-On ---
 if st.session_state['selected_shoe_path'] and st.session_state['selected_shoe_path'] != "_mock_file_placeholder.png":
     
     with col_input:
