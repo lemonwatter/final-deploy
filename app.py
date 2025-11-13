@@ -14,8 +14,8 @@ from functools import lru_cache
 # KONFIGURASI DAN UTILITAS
 # ==============================================================================
 IMG_SIZE = 256
-# PASTIKAN PATH MODEL INI BENAR
-MODEL_G_PATH = 'pix2pix_tryon_G.h5' 
+# PATH DIPERBARUI: Menggunakan folder 'models'
+MODEL_G_PATH = 'models/pix2pix_tryon_G.h5' 
 
 # Konfigurasi logging untuk debugging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -81,8 +81,9 @@ def GeneratorUNet(input_shape=(IMG_SIZE, IMG_SIZE, 7), output_channels=3):
         x = down(x)
         skips.append(x)
     
+    # Koneksi skip
     x = up_stack[0](skips[-1]) 
-    x = Concatenate()([x, skips[3]]) # Connection L4 to U1
+    x = Concatenate()([x, skips[3]]) 
 
     for up, skip_idx in zip(up_stack[1:], [2, 1, 0]):
         x = up(x)
@@ -100,9 +101,12 @@ def load_generator_model(model_path):
     """Memuat model generator (netG) dari path lokal."""
     logger.info(f"Attempting to load model from: {model_path}")
 
+    # Cek keberadaan file model di disk
     if not os.path.exists(model_path):
         logger.error(f"File model not found at: {model_path}")
-        st.error(f"❌ File model tidak ditemukan di: {model_path}. Pastikan path dan nama filenya benar!")
+        # Ganti st.error dengan st.warning agar UI tetap bisa dimuat
+        st.warning(f"❌ File model TIDAK DITEMUKAN di: {model_path}.")
+        st.warning("Pastikan file **pix2pix_tryon_G.h5** berada di direktori yang benar dan sudah di-*commit* ke GitHub.")
         return None
     
     try:
@@ -115,43 +119,49 @@ def load_generator_model(model_path):
         try:
             # Fallback: jika hanya weights yang disimpan
             netG = GeneratorUNet()
+            # Harus build dulu dengan input dummy agar lapisan-lapisan dibuat
+            dummy_input = np.zeros((1, IMG_SIZE, IMG_SIZE, 7), dtype=np.float32)
+            netG(dummy_input) 
             netG.load_weights(model_path)
             st.warning("⚠️ Model dimuat dengan memuat weights ke arsitektur GeneratorUNet kustom.")
             return netG
         except Exception as e:
             logger.error(f"FAILED TO LOAD MODEL (Weights/Architecture): {e}")
-            st.error(f"❌ Gagal memuat model. Periksa apakah arsitektur UNet di kode sama persis dengan model training Anda.")
+            st.error(f"❌ Gagal memuat model. Error: {e}")
+            st.error("Periksa: 1. Kompatibilitas TensorFlow/Keras. 2. Arsitektur UNet harus sama persis.")
             return None
 
 @lru_cache(maxsize=32)
 def get_asset_paths(folder_name):
     """Mendapatkan daftar path file gambar dari folder assets."""
-    # Ini memerlukan struktur folder: 'assets/shoes/' dan 'assets/feet/'
+    # Base directory adalah folder assets di root
     base_dir = os.path.join(os.getcwd(), 'assets', folder_name)
-    if not os.path.isdir(base_dir):
-        # Buat direktori mock jika tidak ada (untuk Streamlit Cloud)
-        os.makedirs(base_dir, exist_ok=True)
-        # Tambahkan mock files agar UI tetap berjalan saat deployment pertama kali
-        if folder_name == 'shoes':
-            mock_files = [f"{base_dir}/shoe_{i}.png" for i in range(1, 4)]
-            # Buat placeholder jika file tidak ada
-            for path in mock_files:
-                if not os.path.exists(path):
-                    Image.new('RGB', (IMG_SIZE, IMG_SIZE), color = 'red' if '1' in path else 'blue').save(path)
-            return mock_files
-        if folder_name == 'feet':
-            mock_files = [f"{base_dir}/feet_{i}.png" for i in range(1, 3)]
-            for path in mock_files:
-                if not os.path.exists(path):
-                    Image.new('RGB', (IMG_SIZE, IMG_SIZE), color = 'lightgray').save(path)
-            return mock_files
-            
-    # Mencari file nyata
+    
+    # Coba cari file nyata
     files = glob.glob(os.path.join(base_dir, '*.[jp][pn]g'), recursive=True)
     files.extend(glob.glob(os.path.join(base_dir, '*.jpeg'), recursive=True))
+
     if not files:
-         st.warning(f"Tidak ada file yang ditemukan di folder assets/{folder_name}/. Menggunakan mock data.")
-         return get_asset_paths(folder_name)
+        # Jika tidak ada, buat folder mock dan placeholder
+        if not os.path.isdir(base_dir):
+            os.makedirs(base_dir, exist_ok=True)
+        
+        st.warning(f"Tidak ada file yang ditemukan di folder assets/{folder_name}/. Menggunakan mock data.")
+        
+        # Tambahkan mock files agar UI tetap berjalan saat deployment pertama kali
+        if folder_name == 'shoes':
+            mock_paths = [f"{base_dir}/mock_shoe_{i}.png" for i in range(1, 4)]
+            for path in mock_paths:
+                if not os.path.exists(path):
+                    Image.new('RGB', (IMG_SIZE, IMG_SIZE), color = 'red').save(path)
+            return mock_paths
+        
+        if folder_name == 'feet':
+            mock_paths = [f"{base_dir}/mock_feet_{i}.png" for i in range(1, 3)]
+            for path in mock_paths:
+                if not os.path.exists(path):
+                    Image.new('RGB', (IMG_SIZE, IMG_SIZE), color = 'lightgray').save(path)
+            return mock_paths
          
     return files
 
@@ -168,13 +178,14 @@ def denormalize(prediction):
 
 def load_image(image_data):
     """Mengubah data gambar menjadi tensor yang diproses."""
+    # Menangani path string (untuk assets lokal)
     if isinstance(image_data, str) and os.path.exists(image_data):
         img = Image.open(image_data).convert('RGB')
-    elif hasattr(image_data, 'read'): # Untuk Streamlit uploaded_file
+    # Menangani Streamlit uploaded_file (BytesIO)
+    elif hasattr(image_data, 'read'): 
         img = Image.open(image_data).convert('RGB')
     else:
-        # Ini akan terjadi jika input_data adalah path string tapi tidak ada file (misal mock data URL)
-        logger.error("Input data gambar tidak valid atau file tidak ada.")
+        # Jika path tidak ada (mungkin saat mock data digunakan)
         return None
 
     img = img.resize((IMG_SIZE, IMG_SIZE))
@@ -195,8 +206,7 @@ def process_inference(shoe_path, feet_data, netG, result_container, mask_value):
     shoe_norm = normalize(shoe_img) 
     feet_norm = normalize(feet_img) 
     
-    # === KRITIKAL: PENGATURAN MASK 7th CHANNEL ===
-    # Mengisi channel ke-7 (mask) dengan nilai tunggal yang dipilih pengguna
+    # === PENGATURAN MASK 7th CHANNEL ===
     mask_channel_float = np.full((IMG_SIZE, IMG_SIZE, 1), mask_value, dtype=np.float32) 
     
     # Concatenation: (H, W, 3) + (H, W, 3) + (H, W, 1) = (H, W, 7)
@@ -210,14 +220,12 @@ def process_inference(shoe_path, feet_data, netG, result_container, mask_value):
                 # Inferensi
                 prediction = netG(input_tensor, training=False)[0].numpy()
                 
-                # Cek hasil mentah untuk debugging output putih
+                # Cek hasil mentah
                 min_raw = np.min(prediction)
                 max_raw = np.max(prediction)
-                mean_raw = np.mean(prediction)
-                logger.info(f"Raw Output Range: Min={min_raw:.4f}, Max={max_raw:.4f}, Mean={mean_raw:.4f}")
                 
                 if abs(max_raw - min_raw) < 0.01:
-                    st.error("❌ Hasilnya sangat flat/hampir putih. Coba ganti '7th Channel Mask Value' di sidebar.")
+                    st.warning("⚠️ Hasilnya sangat flat/hampir putih. Coba ganti '7th Channel Mask Value' di sidebar.")
 
                 # Denormalisasi dan klip
                 final_output = denormalize(prediction)
@@ -240,22 +248,30 @@ if 'selected_shoe_path' not in st.session_state:
     st.session_state['selected_shoe_path'] = None
 if 'feet_input_data' not in st.session_state:
     st.session_state['feet_input_data'] = None
+if 'mask_value' not in st.session_state:
+    st.session_state['mask_value'] = -1.0 # Nilai default
 
 # Sidebar untuk Model Debugging
 with st.sidebar:
     st.title("⚙️ Pengaturan Model")
+    
+    # Muat Model
     netG = load_generator_model(MODEL_G_PATH)
+    
     st.markdown("---")
     
     # DEBUG CONTROL KRITIS
     st.subheader("Debug Masker (7th Channel)")
-    mask_option = st.selectbox(
+    mask_value = st.selectbox(
         "7th Channel Mask Value:", 
         [-1.0, 0.0, 1.0],
+        index=list([-1.0, 0.0, 1.0]).index(st.session_state['mask_value']),
+        key='mask_value_selector',
         help="Pix2Pix Try-On memerlukan nilai spesifik di channel ke-7 (mask) agar bekerja. Coba ganti nilainya."
     )
+    st.session_state['mask_value'] = mask_value # Simpan di state
     st.markdown("---")
-    st.caption("Jika Anda melihat error 'File model tidak ditemukan', pastikan `pix2pix_tryon_G.h5` ada di folder yang sama.")
+    st.caption("Pastikan Anda memiliki folder `assets/shoes` dan `assets/feet` di repositori Anda.")
 
 st.title("👟 Aplikasi Virtual Try-On Sepatu")
 st.markdown("---")
@@ -283,7 +299,7 @@ def shoe_catalog(shoe_assets):
             if st.button(button_label, key=f'select_{shoe_name}', type=button_type, use_container_width=True):
                 st.session_state['selected_shoe_path'] = shoe_path
                 st.session_state['feet_input_data'] = None # Reset input kaki saat ganti sepatu
-                st.rerun() 
+                st.rerun() # Refresh agar UI tampil sesuai state baru
 
 col_input, col_result = st.columns([1, 1], gap="large")
 
@@ -341,7 +357,9 @@ if st.session_state['selected_shoe_path']:
                  # Menggunakan load_image untuk memastikan gambar terbaca
                 loaded_img = load_image(input_feet_data)
                 if loaded_img is not None:
-                    st.image(loaded_img.astype(np.uint8), caption="Citra Kaki", use_column_width=True)
+                    # Konversi kembali ke uint8 untuk tampilan
+                    display_img = loaded_img.astype(np.uint8)
+                    st.image(display_img, caption="Citra Kaki", use_column_width=True)
                     st.session_state['feet_input_data'] = input_feet_data 
             except Exception as e:
                 st.warning(f"Tidak dapat menampilkan pratinjau gambar: {e}")
@@ -354,13 +372,13 @@ if st.session_state['selected_shoe_path']:
         if st.session_state['feet_input_data']:
              if st.button("✨ Terapkan Virtual Try-On", key='tryon_button', type="primary", use_container_width=True):
                 if netG is None:
-                    col_result.error("Model Generator gagal dimuat. Tidak dapat melakukan inferensi.")
+                    col_result.error("Model Generator gagal dimuat. Harap periksa path dan keberadaan file model.")
                 else:
                     process_inference(
                         st.session_state['selected_shoe_path'], 
                         st.session_state['feet_input_data'], 
                         netG, col_result, 
-                        mask_value # Gunakan nilai mask dari sidebar
+                        st.session_state['mask_value'] # Gunakan nilai mask dari state
                     )
         else:
              st.warning("Silakan pilih atau unggah citra kaki.")
