@@ -14,10 +14,8 @@ from functools import lru_cache
 # KONFIGURASI DAN UTILITAS
 # ==============================================================================
 IMG_SIZE = 256
-# PATH MODEL: models/pix2pix_tryon_G.h5 (Sesuai dengan struktur folder Anda)
 MODEL_G_PATH = 'models/pix2pix_tryon_G.h5' 
 
-# Konfigurasi logging untuk debugging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -30,6 +28,7 @@ st.set_page_config(
 # --- 1. Re-Definisi Arsitektur Model (Generator UNet) ---
 # Dibiarkan sama persis dengan kode Anda untuk memastikan kompatibilitas weights
 def downsample(filters, size, apply_batchnorm=True):
+    # ... (Arsitektur Downsample tetap sama)
     initializer = tf.random_normal_initializer(0., 0.02)
     result = tf.keras.Sequential()
     result.add(Conv2D(filters, size, strides=2, padding='same',
@@ -40,6 +39,7 @@ def downsample(filters, size, apply_batchnorm=True):
     return result
 
 def upsample(filters, size, apply_dropout=False):
+    # ... (Arsitektur Upsample tetap sama)
     initializer = tf.random_normal_initializer(0., 0.02)
     result = tf.keras.Sequential()
     result.add(Conv2DTranspose(filters, size, strides=2, padding='same',
@@ -52,20 +52,18 @@ def upsample(filters, size, apply_dropout=False):
 
 def GeneratorUNet(input_shape=(IMG_SIZE, IMG_SIZE, 7), output_channels=3):
     inputs = Input(shape=input_shape) 
-
     down_stack = [
-        downsample(32, 4, apply_batchnorm=False), # L1
-        downsample(64, 4),                       # L2
-        downsample(128, 4),                      # L3
-        downsample(256, 4),                      # L4
-        downsample(512, 4, apply_batchnorm=False), # L5: Bottleneck
+        downsample(32, 4, apply_batchnorm=False), 
+        downsample(64, 4),                      
+        downsample(128, 4),                     
+        downsample(256, 4),                      
+        downsample(512, 4, apply_batchnorm=False), 
     ]
-
     up_stack = [
-        upsample(256, 4, apply_dropout=True), # U1 (Koneksi ke L4)
-        upsample(128, 4),                      # U2 (Koneksi ke L3)
-        upsample(64, 4),                       # U3 (Koneksi ke L2)
-        upsample(32, 4),                       # U4 (Koneksi ke L1)
+        upsample(256, 4, apply_dropout=True), 
+        upsample(128, 4),                      
+        upsample(64, 4),                       
+        upsample(32, 4),                       
     ]
     
     initializer = tf.random_normal_initializer(0., 0.02)
@@ -79,7 +77,6 @@ def GeneratorUNet(input_shape=(IMG_SIZE, IMG_SIZE, 7), output_channels=3):
         x = down(x)
         skips.append(x)
     
-    # Koneksi skip
     x = up_stack[0](skips[-1]) 
     x = Concatenate()([x, skips[3]]) 
 
@@ -95,17 +92,17 @@ def GeneratorUNet(input_shape=(IMG_SIZE, IMG_SIZE, 7), output_channels=3):
 
 @st.cache_resource
 def load_generator_model(model_path):
-    """Memuat model generator (netG) dari path lokal."""
+    # ... (Fungsi loading model tetap sama)
     logger.info(f"Attempting to load model from: {model_path}")
 
     if not os.path.exists(model_path):
         st.error(f"❌ KESALAHAN KRITIS: File model tidak ditemukan di: {model_path}.")
-        st.error("Pastikan Anda menggunakan **Git LFS** untuk model besar dan sudah di-*commit* dan di-*push*.")
+        st.error("Pastikan Anda menggunakan **Git LFS** untuk model besar.")
         return None
     
     try:
         netG = tf.keras.models.load_model(model_path, compile=False, custom_objects={'LeakyReLU': LeakyReLU})
-        st.success("✅ Model Generator berhasil dimuat menggunakan tf.keras.models.load_model.")
+        st.success("✅ Model Generator berhasil dimuat.")
         return netG
     except Exception as e:
         logger.warning(f"Gagal memuat model penuh: {e}. Mencoba memuat weights ke arsitektur kustom.")
@@ -123,7 +120,6 @@ def load_generator_model(model_path):
 
 @lru_cache(maxsize=32)
 def get_asset_paths(folder_name):
-    """Mendapatkan daftar path file gambar dari folder assets."""
     base_dir = os.path.join(os.getcwd(), 'assets', folder_name)
     files = glob.glob(os.path.join(base_dir, '*.[jp][pn]g'), recursive=True)
     files.extend(glob.glob(os.path.join(base_dir, '*.jpeg'), recursive=True))
@@ -131,7 +127,6 @@ def get_asset_paths(folder_name):
     if not files:
         if not os.path.isdir(base_dir):
             os.makedirs(base_dir, exist_ok=True)
-        # Tambahkan mock files agar UI tetap berjalan saat deployment pertama kali
         return ["_mock_file_placeholder.png"]
          
     return files
@@ -146,8 +141,6 @@ def denormalize(prediction):
     return prediction.clip(0, 255).astype(np.uint8)
 
 def load_image(image_data):
-    """Mengubah data gambar menjadi tensor yang diproses."""
-    # Menangani path string (termasuk mock)
     if isinstance(image_data, str) and os.path.exists(image_data) and "_mock_file_placeholder" not in image_data:
         img = Image.open(image_data).convert('RGB')
     elif hasattr(image_data, 'read'): 
@@ -160,27 +153,23 @@ def load_image(image_data):
     return img
 
 def create_mask_from_shoe(shoe_img_norm):
-    """Membuat mask sederhana dari gambar sepatu yang dinormalisasi."""
     # Mengambil rata-rata 3 channel, lalu mengubah ke 1 channel mask
     shoe_mask = np.mean(shoe_img_norm, axis=-1, keepdims=True)
     return shoe_mask
 
 def blend_result_with_feet(feet_original_img, generated_shoe_img):
     """
-    Menggabungkan (overlay) hasil prediksi (sepatu + background) 
-    ke gambar kaki asli (feet_original_img).
+    Menggabungkan (overlay) hasil prediksi ke gambar kaki asli.
     """
     
-    # 1. Tentukan area yang akan di-overlay (area yang bukan latar belakang)
-    # Asumsikan latar belakang putih atau abu-abu terang (nilai tinggi di [0, 255])
-    # Kita buat thresholding sederhana: piksel gelap (sepatu) vs piksel terang (background)
+    # 1. Tentukan area yang akan di-overlay (Area Sepatu)
     
-    # Konversi ke skala abu-abu dan normalisasi ke [0, 1]
+    # Konversi hasil prediksi ke skala abu-abu dan normalisasi ke [0, 1]
     generated_gray = np.mean(generated_shoe_img, axis=-1) / 255.0
     
-    # Thresholding: 0.8 biasanya berfungsi untuk memisahkan objek gelap dari latar belakang terang
-    # Area sepatu (foreground) akan bernilai 1.0, area background 0.0
-    mask = (generated_gray < 0.8).astype(np.float32)
+    # Thresholding: 0.8 biasanya berfungsi untuk memisahkan objek gelap/berwarna dari latar belakang terang
+    # Masker: Area sepatu (foreground) akan bernilai 1.0, area background 0.0
+    mask = (generated_gray < 0.85).astype(np.float32) # Toleransi sedikit dinaikkan ke 0.85
     mask = np.expand_dims(mask, axis=-1) # Kembalikan ke (H, W, 1)
 
     # 2. Blend: (Foreground * Mask) + (Background * (1 - Mask))
@@ -191,7 +180,6 @@ def blend_result_with_feet(feet_original_img, generated_shoe_img):
     # Kaki asli (Background) dikalikan dengan kebalikan dari Mask (area non-sepatu)
     background = feet_original_img * (1 - mask)
     
-    # 3. Gabungkan
     blended_image = foreground + background
     
     return blended_image.clip(0, 255).astype(np.uint8)
@@ -232,7 +220,7 @@ def process_inference(shoe_path, feet_data, netG, result_container, mask_source,
                 # 2. Denormalisasi Output (Rentang [0, 255])
                 generated_shoe_img_uint8 = denormalize(prediction_norm)
                 
-                # 3. Blending (Overlay) ke Gambar Kaki Asli
+                # --- BLENDING ---
                 final_output = blend_result_with_feet(feet_img_orig, generated_shoe_img_uint8)
                 
                 # Tampilkan hasil
@@ -240,6 +228,23 @@ def process_inference(shoe_path, feet_data, netG, result_container, mask_source,
                 st.image(final_output, caption=f"Hasil Try-On (Mask Source: {mask_label})", use_column_width=True) 
                 st.balloons()
                 
+                # --- TAMPILKAN DEBUGGING ---
+                st.markdown("---")
+                st.subheader("🛠️ Debugging Output")
+                cols = st.columns(2)
+                with cols[0]:
+                    st.image(generated_shoe_img_uint8, caption="Output Mentah Model (Generated Shoe)", use_column_width=True)
+                    
+                with cols[1]:
+                    # Visualisasi Masker Input ke Model (Channel ke-7)
+                    if mask_source == "Masker Sepatu (Berdasarkan Warna Sepatu)":
+                        mask_display = (mask_channel_float * 127.5 + 127.5).astype(np.uint8)
+                    else:
+                        mask_display = np.full((IMG_SIZE, IMG_SIZE, 1), (mask_value * 127.5 + 127.5), dtype=np.uint8)
+                        
+                    st.image(mask_display, caption=f"Input Masker ke-7 ({mask_label})", use_column_width=True)
+
+
             except Exception as e:
                 st.error(f"❌ Terjadi kesalahan saat inferensi atau blending: {e}")
                 logger.error(f"Inferensi error: {e}")
@@ -270,18 +275,33 @@ with st.sidebar:
     # DEBUG CONTROL KRITIS
     st.subheader("Debug Masker (7th Channel)")
     
+    mask_source_options = [
+        "Masker Sepatu (Berdasarkan Warna Sepatu)", 
+        "Nilai Tetap (-1.0)", 
+        "Nilai Tetap (0.0)", 
+        "Nilai Tetap (1.0)",
+        "Zero Mask (All 0s)", # Opsi baru
+        "One Mask (All 1s)"   # Opsi baru
+    ]
+    
     mask_source = st.selectbox(
         "7th Channel Mask Source:", 
-        ["Masker Sepatu (Berdasarkan Warna Sepatu)", "Nilai Tetap (-1.0)", "Nilai Tetap (0.0)", "Nilai Tetap (1.0)"],
+        mask_source_options,
         index=0,
         key='mask_source_selector',
-        help="Pilih sumber untuk channel ke-7. Opsi 'Masker Sepatu' menggunakan citra sepatu sebagai sinyal posisi."
+        help="Pilih sumber untuk channel ke-7. Jika hasil putih/abu-abu, coba ganti opsi ini."
     )
     st.session_state['mask_source'] = mask_source
 
     fixed_mask_value = None
-    if "Nilai Tetap" in mask_source:
-        fixed_mask_value = float(mask_source.split('(')[1].strip(')'))
+    if "Nilai Tetap" in mask_source or "Mask" in mask_source:
+        if "Nilai Tetap" in mask_source:
+            fixed_mask_value = float(mask_source.split('(')[1].strip(')'))
+        elif mask_source == "Zero Mask (All 0s)":
+             fixed_mask_value = 0.0
+        elif mask_source == "One Mask (All 1s)":
+             fixed_mask_value = 1.0
+             
         st.session_state['mask_value'] = fixed_mask_value
     
     st.markdown("---")
@@ -301,7 +321,6 @@ def shoe_catalog(shoe_assets):
             shoe_name = os.path.basename(shoe_path)
             is_selected = (shoe_path == st.session_state.get('selected_shoe_path'))
             
-            # Tampilkan gambar
             if shoe_name == "_mock_file_placeholder.png":
                 st.image(Image.new('RGB', (IMG_SIZE, IMG_SIZE), color = '#ff4b4b'), caption="MOCK: File Hilang", use_column_width=True)
             else:
