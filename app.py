@@ -25,8 +25,8 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- 1. Re-Definisi Arsitektur Model (Generator UNet) ---
-# Dibiarkan sama persis dengan kode Anda untuk memastikan kompatibilitas weights
+# --- 1. Definisi Arsitektur Model (Generator UNet) ---
+# Arsitektur disinkronkan dengan training ringan (5 Layer, filter 32/64)
 def downsample(filters, size, apply_batchnorm=True):
     initializer = tf.random_normal_initializer(0., 0.02)
     result = tf.keras.Sequential()
@@ -49,19 +49,22 @@ def upsample(filters, size, apply_dropout=False):
     return result
 
 def GeneratorUNet(input_shape=(IMG_SIZE, IMG_SIZE, 7), output_channels=3):
+    """Generator U-Net 5 Lapisan/Layer (Sama dengan kode training terakhir)"""
     inputs = Input(shape=input_shape) 
+    # Downsampling 5 Layer
     down_stack = [
         downsample(32, 4, apply_batchnorm=False), 
-        downsample(64, 4),                      
-        downsample(128, 4),                     
-        downsample(256, 4),                      
-        downsample(512, 4, apply_batchnorm=False), 
+        downsample(64, 4),                        
+        downsample(128, 4),                       
+        downsample(256, 4),                       
+        downsample(512, 4), # Bottleneck
     ]
+    # Upsampling 4 Layer
     up_stack = [
         upsample(256, 4, apply_dropout=True), 
-        upsample(128, 4),                      
-        upsample(64, 4),                       
-        upsample(32, 4),                       
+        upsample(128, 4),                       
+        upsample(64, 4),                        
+        upsample(32, 4),                        
     ]
     
     initializer = tf.random_normal_initializer(0., 0.02)
@@ -71,14 +74,19 @@ def GeneratorUNet(input_shape=(IMG_SIZE, IMG_SIZE, 7), output_channels=3):
     x = inputs
     skips = []
     
+    # Encoder
     for down in down_stack:
         x = down(x)
         skips.append(x)
     
-    x = up_stack[0](skips[-1]) 
-    x = Concatenate()([x, skips[3]]) 
+    skips = reversed(skips[:-1]) # skips [512, 256, 128, 64]
 
-    for up, skip_idx in zip(up_stack[1:], [2, 1, 0]):
+    # Decoder (Manual Skip Connections)
+    x = skips[0] 
+    x = up_stack[0](x)
+    x = Concatenate()([x, skips[1]]) # Skip 1 (dari Lapis 4 Down)
+
+    for up, skip_idx in zip(up_stack[1:], [2, 3]): 
         x = up(x)
         x = Concatenate()([x, skips[skip_idx]])
 
@@ -91,50 +99,39 @@ def GeneratorUNet(input_shape=(IMG_SIZE, IMG_SIZE, 7), output_channels=3):
 @st.cache_resource
 def load_generator_model(model_path):
     """Memuat model generator (netG) dari path lokal."""
-    logger.info(f"Attempting to load model from: {model_path}")
-
-    if not os.path.exists(model_path):
-        st.error(f"❌ KESALAHAN KRITIS: File model tidak ditemukan di: {model_path}.")
-        st.error("Pastikan Anda menggunakan **Git LFS** untuk model besar.")
-        return None
     
-    try:
-        # FIX: Tambahkan custom_objects untuk mengenali LeakyReLU
-        netG = tf.keras.models.load_model(
-            model_path, 
-            compile=False, 
-            custom_objects={'LeakyReLU': tf.keras.layers.LeakyReLU}
-        )
-        st.success("✅ Model Generator berhasil dimuat.")
-        return netG
-    except Exception as e:
-        logger.warning(f"Gagal memuat model penuh: {e}. Mencoba memuat weights ke arsitektur kustom.")
-        st.warning(f"⚠️ Gagal memuat model penuh. Mencoba memuat weights. Error: {e}")
+    # 1. Coba memuat model penuh/bobot (untuk Git LFS)
+    if os.path.exists(model_path):
         try:
-            # Fallback: jika hanya weights yang disimpan
-            netG = GeneratorUNet()
-            dummy_input = np.zeros((1, IMG_SIZE, IMG_SIZE, 7), dtype=np.float32)
-            netG(dummy_input) 
-            netG.load_weights(model_path)
-            st.success("✅ Model dimuat sukses dengan memuat weights.")
+            netG = tf.keras.models.load_model(
+                model_path, 
+                compile=False, 
+                custom_objects={'LeakyReLU': tf.keras.layers.LeakyReLU}
+            )
+            st.success("✅ Model Generator berhasil dimuat.")
             return netG
-        except Exception as e_fallback:
-            logger.error(f"FAILED TO LOAD MODEL (Weights/Architecture): {e_fallback}")
-            st.error(f"❌ GAGAL TOTAL: Gagal memuat model. Error: {e_fallback}")
+        except Exception as e:
+            logger.error(f"Gagal memuat model penuh/bobot: {e}")
+            st.error(f"❌ Gagal memuat model. Error: {e}")
+            st.error("Ini mungkin berarti file model corrupt atau Git LFS gagal mengunduh data biner.")
             return None
+    
+    st.error(f"❌ KESALAHAN KRITIS: File model tidak ditemukan di: {model_path}.")
+    st.error("Pastikan file model (200MB+) ada di `models/` dan di-*commit* menggunakan **Git LFS**.")
+    return None
+
 
 @lru_cache(maxsize=32)
 def get_asset_paths(folder_name):
-    base_dir = os.path.join(os.getcwd(), 'assets', folder_name)
-    files = glob.glob(os.path.join(base_dir, '*.[jp][pn]g'), recursive=True)
-    files.extend(glob.glob(os.path.join(base_dir, '*.jpeg'), recursive=True))
-
-    if not files:
-        if not os.path.isdir(base_dir):
-            os.makedirs(base_dir, exist_ok=True)
-        return ["_mock_file_placeholder.png"]
-         
-    return files
+    """Mendapatkan daftar path file gambar dari folder assets."""
+    asset_dir = os.path.join('assets', folder_name)
+    if not os.path.isdir(asset_dir):
+        os.makedirs(asset_dir, exist_ok=True)
+        return ["_mock_file_placeholder.png"] 
+        
+    files = glob.glob(os.path.join(asset_dir, '*.[jp][pn]g'), recursive=True)
+    files.extend(glob.glob(os.path.join(asset_dir, '*.jpeg'), recursive=True))
+    return files if files else ["_mock_file_placeholder.png"]
 
 # --- 3. Pre-pemrosesan dan Inferensi ---
 
@@ -146,6 +143,7 @@ def denormalize(prediction):
     return prediction.clip(0, 255).astype(np.uint8)
 
 def load_image(image_data):
+    """Mengubah data gambar menjadi tensor yang diproses."""
     if isinstance(image_data, str) and os.path.exists(image_data) and "_mock_file_placeholder" not in image_data:
         img = Image.open(image_data).convert('RGB')
     elif hasattr(image_data, 'read'): 
@@ -159,17 +157,17 @@ def load_image(image_data):
 
 def create_mask_from_shoe(shoe_img_norm):
     shoe_mask = np.mean(shoe_img_norm, axis=-1, keepdims=True)
-    return shoe_mask
+    return np.where(np.abs(shoe_mask) > 0.1, 1.0, 0.0).astype(np.float32)
 
 def blend_result_with_feet(feet_original_img, generated_shoe_img):
     
     generated_gray = np.mean(generated_shoe_img, axis=-1) / 255.0
     
+    # Masker: Asumsi area yang digenerate adalah area yang ingin kita pertahankan
     mask = (generated_gray < 0.85).astype(np.float32) 
     mask = np.expand_dims(mask, axis=-1) 
 
     foreground = generated_shoe_img * mask
-
     background = feet_original_img * (1 - mask)
     
     blended_image = foreground + background
@@ -183,7 +181,7 @@ def process_inference(shoe_path, feet_data, netG, result_container, mask_source,
     feet_img_orig = load_image(feet_data)
 
     if shoe_img_orig is None or feet_img_orig is None:
-        result_container.error("Gagal memuat atau memproses salah satu gambar. Pastikan gambar ada dan valid.")
+        result_container.error("Gagal memuat atau memproses salah satu gambar.")
         return 
 
     shoe_norm = normalize(shoe_img_orig) 
@@ -209,7 +207,6 @@ def process_inference(shoe_path, feet_data, netG, result_container, mask_source,
                 
                 st.subheader("🎉 Hasil Virtual Try-On (dengan Blending)")
                 st.image(final_output, caption=f"Hasil Try-On (Mask Source: {mask_label})", use_column_width=True) 
-                st.balloons()
                 
                 # --- TAMPILKAN DEBUGGING ---
                 st.markdown("---")
@@ -235,7 +232,7 @@ def process_inference(shoe_path, feet_data, netG, result_container, mask_source,
 # APLIKASI STREAMLIT UTAMA
 # ==============================================================================
 
-# Inisialisasi State
+# Inisialisasi State (tetap sama)
 if 'selected_shoe_path' not in st.session_state:
     st.session_state['selected_shoe_path'] = None
 if 'feet_input_data' not in st.session_state:
@@ -280,15 +277,16 @@ with st.sidebar:
         if "Nilai Tetap" in mask_source:
             fixed_mask_value = float(mask_source.split('(')[1].strip(')'))
         elif mask_source == "Zero Mask (All 0s)":
-             fixed_mask_value = 0.0
+            fixed_mask_value = 0.0
         elif mask_source == "One Mask (All 1s)":
-             fixed_mask_value = 1.0
+            fixed_mask_value = 1.0
              
         st.session_state['mask_value'] = fixed_mask_value
     
     st.markdown("---")
     st.caption("Pastikan file model besar Anda di-*commit* menggunakan **Git LFS**.")
 
+# Kolom UI Utama (tetap sama)
 st.title("👟 Aplikasi Virtual Try-On Sepatu")
 st.markdown("---")
 
@@ -307,9 +305,9 @@ def shoe_catalog(shoe_assets):
                 st.image(Image.new('RGB', (IMG_SIZE, IMG_SIZE), color = '#ff4b4b'), caption="MOCK: File Hilang", use_column_width=True)
             else:
                 try:
-                     st.image(shoe_path, caption="", use_column_width=True)
+                    st.image(shoe_path, caption="", use_column_width=True)
                 except Exception:
-                     st.image(Image.new('RGB', (IMG_SIZE, IMG_SIZE), color = '#ff4b4b'), caption="File Hilang", use_column_width=True)
+                    st.image(Image.new('RGB', (IMG_SIZE, IMG_SIZE), color = '#ff4b4b'), caption="File Hilang", use_column_width=True)
             
             button_label = "✅ Dipilih" if is_selected else "Pilih"
             button_type = "secondary" if is_selected else "primary"
@@ -340,50 +338,53 @@ if st.session_state['selected_shoe_path'] and st.session_state['selected_shoe_pa
         
         input_feet_data = None
         
-        if input_method == "Pilih dari Galeri":
-            feet_assets = get_asset_paths('feet')
-            feet_options = [os.path.basename(p) for p in feet_assets if p != "_mock_file_placeholder.png"]
+        col_feet_input, col_feet_preview = st.columns(2)
 
-            if feet_options:
-                selected_feet_name = st.selectbox(
-                    "Pilih Bentuk Kaki Galeri:", 
-                    feet_options, 
-                    index=0, 
-                    key='select_feet_gallery'
-                )
-                input_feet_data = os.path.join(os.getcwd(), 'assets', 'feet', selected_feet_name)
+        with col_feet_input:
+            if input_method == "Pilih dari Galeri":
+                feet_assets = get_asset_paths('feet')
+                feet_options = [os.path.basename(p) for p in feet_assets if p != "_mock_file_placeholder.png"]
+
+                if feet_options:
+                    selected_feet_name = st.selectbox(
+                        "Pilih Bentuk Kaki Galeri:", 
+                        feet_options, 
+                        index=0, 
+                        key='select_feet_gallery'
+                    )
+                    input_feet_data = os.path.join(os.getcwd(), 'assets', 'feet', selected_feet_name)
+                else:
+                    st.warning("Tidak ada gambar kaki di galeri.")
+            
             else:
-                 st.warning("Tidak ada gambar kaki di galeri. Harap unggah manual atau tambahkan file ke `assets/feet`.")
-            
-        else:
-            uploaded_file = st.file_uploader(
-                "Unggah Citra Kaki (JPG/PNG)", 
-                type=["jpg", "png", "jpeg"], 
-                key='feet_uploader'
-            )
-            if uploaded_file is not None:
-                input_feet_data = uploaded_file
-            
-        
-        if input_feet_data is not None:
-            st.markdown("---")
-            st.subheader("Pratinjau Citra Kaki:")
-            try:
-                loaded_img = load_image(input_feet_data)
-                if loaded_img is not None:
-                    display_img = loaded_img.astype(np.uint8)
-                    st.image(display_img, caption="Citra Kaki", use_column_width=True)
-                    st.session_state['feet_input_data'] = input_feet_data 
-            except Exception as e:
-                st.warning(f"Tidak dapat menampilkan pratinjau gambar: {e}")
-            st.markdown("---")
-        else:
-            st.session_state['feet_input_data'] = None
+                uploaded_file = st.file_uploader(
+                    "Unggah Citra Kaki (JPG/PNG)", 
+                    type=["jpg", "png", "jpeg"], 
+                    key='feet_uploader'
+                )
+                if uploaded_file is not None:
+                    input_feet_data = uploaded_file
 
+        
+        with col_feet_preview:
+            if input_feet_data is not None:
+                st.markdown("**Pratinjau Kaki:**")
+                try:
+                    loaded_img = load_image(input_feet_data)
+                    if loaded_img is not None:
+                        display_img = loaded_img.astype(np.uint8)
+                        st.image(display_img, caption="Citra Kaki", use_column_width=True)
+                        st.session_state['feet_input_data'] = input_feet_data 
+                except Exception as e:
+                    st.warning(f"Tidak dapat menampilkan pratinjau gambar: {e}")
+            else:
+                 st.session_state['feet_input_data'] = None
+
+        
         st.markdown("<br>", unsafe_allow_html=True)
         # TOMBOL TRY-ON
         if st.session_state['feet_input_data']:
-             if st.button("✨ Terapkan Virtual Try-On", key='tryon_button', type="primary", use_container_width=True):
+            if st.button("✨ Terapkan Virtual Try-On", key='tryon_button', type="primary", use_container_width=True):
                 if netG is None:
                     col_result.error("Model Generator gagal dimuat. Harap periksa path dan keberadaan file model.")
                 else:
@@ -395,7 +396,7 @@ if st.session_state['selected_shoe_path'] and st.session_state['selected_shoe_pa
                         st.session_state.get('mask_value', -1.0)
                     )
         else:
-             st.warning("Silakan pilih atau unggah citra kaki.")
+            st.warning("Silakan pilih atau unggah citra kaki.")
 else:
     with col_result:
         st.header("Selamat Datang!")
