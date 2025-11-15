@@ -86,7 +86,7 @@ def GeneratorUNet(input_shape=(IMG_SIZE, IMG_SIZE, 7), output_channels=3):
     x = up_stack[0](x)
     x = Concatenate()([x, skips[1]]) # Skip 1 (dari Lapis 4 Down)
 
-    for up, skip_idx in zip(up_stack[1:], [2, 3]): 
+    for up, skip_idx in zip(up_stack[1:], [2, 3]): # Lapis 2 & 3
         x = up(x)
         x = Concatenate()([x, skips[skip_idx]])
 
@@ -100,25 +100,25 @@ def GeneratorUNet(input_shape=(IMG_SIZE, IMG_SIZE, 7), output_channels=3):
 def load_generator_model(model_path):
     """Memuat model generator (netG) dari path lokal."""
     
-    # 1. Coba memuat model penuh/bobot (untuk Git LFS)
-    if os.path.exists(model_path):
-        try:
-            netG = tf.keras.models.load_model(
-                model_path, 
-                compile=False, 
-                custom_objects={'LeakyReLU': tf.keras.layers.LeakyReLU}
-            )
-            st.success("✅ Model Generator berhasil dimuat.")
-            return netG
-        except Exception as e:
-            logger.error(f"Gagal memuat model penuh/bobot: {e}")
-            st.error(f"❌ Gagal memuat model. Error: {e}")
-            st.error("Ini mungkin berarti file model corrupt atau Git LFS gagal mengunduh data biner.")
-            return None
+    if not os.path.exists(model_path):
+        st.error(f"❌ KESALAHAN KRITIS: File model tidak ditemukan di: {model_path}.")
+        st.error("Pastikan Anda menggunakan **Git LFS** untuk model besar dan nama file-nya benar.")
+        return None
     
-    st.error(f"❌ KESALAHAN KRITIS: File model tidak ditemukan di: {model_path}.")
-    st.error("Pastikan file model (200MB+) ada di `models/` dan di-*commit* menggunakan **Git LFS**.")
-    return None
+    try:
+        # Mencoba memuat model penuh/bobot dengan custom_objects
+        netG = tf.keras.models.load_model(
+            model_path, 
+            compile=False, 
+            custom_objects={'LeakyReLU': tf.keras.layers.LeakyReLU}
+        )
+        st.success("✅ Model Generator berhasil dimuat.")
+        return netG
+    except Exception as e:
+        logger.error(f"Gagal memuat model penuh/bobot: {e}")
+        st.error(f"❌ GAGAL memuat model. Error: {e}")
+        st.error("Ini mungkin berarti file model corrupt atau Git LFS gagal mengunduh data biner.")
+        return None
 
 
 @lru_cache(maxsize=32)
